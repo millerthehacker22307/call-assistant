@@ -44,6 +44,20 @@
   #summary dt { font-weight:700; color:#166534; }
   #summary dd { margin:0; }
   .small { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+  .modebar { display:flex; gap:8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .modebtn { flex:1; min-width: 220px; background:#fff; border:1px solid var(--line); color: var(--ink); border-radius: 12px; padding: 11px 12px; font-size: 14.5px; }
+  .modebtn.active { background: var(--brand); border-color: var(--brand); color:#fff; }
+  .modebtn:disabled { opacity:.45; cursor:not-allowed; }
+  #commandInbox { display:none; margin-top:16px; }
+  #commandInbox h3 { margin: 0 0 10px; }
+  .cmd { border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; background:#fff; }
+  .cmd .txt { font-size: 15px; line-height: 1.5; }
+  .cmd .meta { display:flex; align-items:center; gap:8px; margin-top: 6px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+  .badge { font-weight:700; font-size: 11px; letter-spacing:.05em; text-transform: uppercase; border-radius: 999px; padding: 2px 8px; }
+  .badge.new { background:#fef3c7; color:#92400e; border:1px solid #fde68a; }
+  .badge.done { background:#dcfce7; color:#166534; border:1px solid #bbf7d0; }
+  .cmd button.donebtn { margin-left:auto; padding: 6px 10px; font-size: 12.5px; border-radius: 8px; background:#f0fdfa; border:1px solid #99f6e4; color: var(--brand2); }
+  .empty { color: var(--muted); font-size: 14px; }
 </style>
 </head>
 <body>
@@ -60,7 +74,15 @@
       20–30 seconds. The timer above shows the live duration; at 45 seconds Charco politely wraps up, and the call ends at 60 seconds at the latest.<br />
       <strong>Demo mode:</strong> this call runs 100% in your browser using the Web Speech API — free, no account needed.
       Real phone calls (on Miller's actual number) activate after the Twilio telephony keys are added to the server's
-      <code>.env</code> file. Mic works on <code>localhost</code> or HTTPS pages.
+      <code>.env</code> file. Mic works on <code>localhost</code> or HTTPS pages.<br />
+      <strong>Two ways to call:</strong> use the toggle below — <em>Answering mode</em> is what any caller experiences;
+      <em>Command mode</em> is what happens when <strong>Miller himself</strong> calls the number: Charco recognises him,
+      takes a spoken command, and saves it to the Command inbox.
+    </div>
+
+    <div class="modebar" role="group" aria-label="Call mode">
+      <button type="button" id="modeAnswerBtn" class="modebtn active">📞 Answering mode (as a caller)</button>
+      <button type="button" id="modeCommandBtn" class="modebtn">🎖️ Command mode (as Miller)</button>
     </div>
 
     <div class="panel">
@@ -86,7 +108,7 @@
         <input id="typeInput" type="text" placeholder="No mic? Type your reply here and press Send…" autocomplete="off" />
         <button type="submit">Send</button>
       </form>
-      <p class="small">
+      <p class="small" id="tryHint">
         Try saying: <em>“My name is Aarav”</em> → then ask <em>“What are your timings?”</em>,
         <em>“Who is this?”</em>, <em>“What is the price?”</em> — or just dictate a message for Miller.
         Say <em>“Nothing else”</em> or <em>“Bye”</em> to end politely.
@@ -94,6 +116,16 @@
     </div>
 
     <div id="summary"></div>
+
+    <div id="commandInbox" class="panel">
+      <h3>🗂️ Command inbox</h3>
+      <div id="commandList"></div>
+      <p class="small">
+        Commands dictated in Command mode land here with status <strong>New</strong> — the demo keeps them in this
+        browser (localStorage), just like the server keeps real ones for <code>GET /api/commands</code>.
+        On real calls, Charco picks up each New command, executes it, reports back on WhatsApp, and marks it Done.
+      </p>
+    </div>
   </div>
 
 <script src="/dialogue.js"></script>
@@ -114,12 +146,21 @@
   var typeForm = document.getElementById('typeForm');
   var typeInput = document.getElementById('typeInput');
   var summaryEl = document.getElementById('summary');
+  var modeAnswerBtn = document.getElementById('modeAnswerBtn');
+  var modeCommandBtn = document.getElementById('modeCommandBtn');
+  var tryHint = document.getElementById('tryHint');
+  var inboxEl = document.getElementById('commandInbox');
+  var commandListEl = document.getElementById('commandList');
 
   var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   var synth = window.speechSynthesis;
 
+  // Demo mode: 'answer' (any caller) or 'command' (Miller himself).
+  var mode = 'answer';
+  var commandRetried = false; // one empty-command retry, mirrors the phone flow
+
   var callActive = false;
-  var step = 'idle'; // idle -> name -> purpose -> more -> done
+  var step = 'idle'; // idle -> name -> purpose -> more -> done | command -> done
   var callerName = '';
   var record = null;
   var recognition = null;
@@ -193,6 +234,7 @@
     addBubble('system', 'Call ended — 1-minute limit');
     setStatus('Call ended — summary saved below ✅', '');
     startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    setModeButtons(false);
     if (record) {
       record.endedAt = new Date().toISOString();
       record.durationSec = elapsedSecs();
@@ -258,6 +300,16 @@
       if (!callActive) return;
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
         setStatus('Microphone permission denied — please allow the mic, or type your reply below.', 'live');
+      } else if (ev.error === 'no-speech' && step === 'command') {
+        // Command heard nothing: ONE spoken retry, then end politely —
+        // mirrors the fall-through retry in the phone flow's TwiML.
+        wantListen = false;
+        if (!commandRetried) {
+          commandRetried = true;
+          speak(D.COMMAND.emptyRetryLine, function () { if (callActive) startListening(); });
+        } else {
+          finishCall('command', D.COMMAND.noCommandLine);
+        }
       } else if (ev.error === 'no-speech' && wantListen) {
         setStatus('I did not catch that — tap “Speak now” and try again, or type below.', 'live');
       }
@@ -281,6 +333,26 @@
     if (!callActive || !text) return;
     addBubble('caller', text);
     logTurn('caller', text);
+
+    if (step === 'command') {
+      // COMMAND MODE: the whole utterance is Miller's command. Save it to
+      // the demo Command inbox (status New), then speak the confirmation
+      // and end — one gather, one confirmation, just like the phone flow.
+      var cmd = {
+        id: 'demo-cmd-' + Date.now(),
+        at: new Date().toISOString(),
+        from: 'Miller (browser demo)',
+        commandText: text,
+        status: 'new',
+      };
+      saveCommand(cmd);
+      record.message = text;
+      record.purpose = 'Owner command';
+      record.commandId = cmd.id;
+      renderCommandInbox();
+      finishCall('command', D.COMMAND.confirm(text));
+      return;
+    }
 
     if (step === 'name') {
       callerName = D.extractName(text);
@@ -318,9 +390,10 @@
     finishCall();
   }
 
-  // Every ending — natural or time-triggered — speaks the single wrap-up
-  // line and closes. reason: 'natural' | 'time'.
-  function finishCall(reason) {
+  // Every ending — natural or time-triggered — speaks one final line and
+  // closes. reason: 'natural' | 'time' | 'command'. In command mode the
+  // final line is the command confirmation instead of the usual wrap-up.
+  function finishCall(reason, finalLine) {
     if (step === 'done') return;
     step = 'done';
     callActive = false;
@@ -333,11 +406,15 @@
       record.endedReason = reason || 'natural';
     }
     if (reason === 'time') addBubble('system', 'Call ended — 1-minute limit');
-    speak(LINES.wrapUp, function () {
-      setStatus('Call ended — summary saved below ✅', '');
+    speak(finalLine || LINES.wrapUp, function () {
+      setStatus(
+        reason === 'command' ? 'Command saved — see the Command inbox below ✅' : 'Call ended — summary saved below ✅',
+        ''
+      );
     });
     setStatus('Wrapping up…', 'live');
     startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    setModeButtons(false);
     if (record) { saveSummary(record); renderSummary(record); }
   }
 
@@ -368,20 +445,98 @@
     summaryEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
+  /* ---------------- Command inbox (demo mirror of /api/commands) ---------------- */
+  var COMMANDS_KEY = 'charco_demo_commands';
+  function loadCommands() {
+    try { return JSON.parse(localStorage.getItem(COMMANDS_KEY) || '[]'); } catch (e) { return []; }
+  }
+  function saveCommand(cmd) {
+    try {
+      var all = loadCommands();
+      all.push(cmd);
+      localStorage.setItem(COMMANDS_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+  function renderCommandInbox() {
+    var all = loadCommands().slice().reverse(); // newest first, like the API
+    inboxEl.style.display = 'block';
+    if (!all.length) {
+      commandListEl.innerHTML = '<p class="empty">No commands yet — start a call in Command mode and dictate one.</p>';
+      return;
+    }
+    commandListEl.innerHTML = all.map(function (c) {
+      var when = new Date(c.at).toLocaleString();
+      var doneBtn = c.status === 'new'
+        ? '<button type="button" class="donebtn" data-done="' + esc(c.id) + '">✓ Mark done</button>'
+        : '';
+      return (
+        '<div class="cmd"><div class="txt">' + esc(c.commandText) + '</div>' +
+        '<div class="meta"><span class="badge ' + esc(c.status) + '">' + esc(c.status) + '</span>' +
+        '<span>' + esc(when) + '</span>' + doneBtn + '</div></div>'
+      );
+    }).join('');
+  }
+  commandListEl.addEventListener('click', function (ev) {
+    var id = ev.target && ev.target.getAttribute ? ev.target.getAttribute('data-done') : null;
+    if (!id) return;
+    var all = loadCommands();
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id === id) { all[i].status = 'done'; all[i].doneAt = new Date().toISOString(); }
+    }
+    try { localStorage.setItem(COMMANDS_KEY, JSON.stringify(all)); } catch (e) {}
+    renderCommandInbox();
+  });
+
+  /* ---------------- Mode toggle ---------------- */
+  var HINTS = {
+    answer:
+      'Try saying: <em>“My name is Aarav”</em> → then ask <em>“What are your timings?”</em>, ' +
+      '<em>“Who is this?”</em>, <em>“What is the price?”</em> — or just dictate a message for Miller. ' +
+      'Say <em>“Nothing else”</em> or <em>“Bye”</em> to end politely.',
+    command:
+      'You are calling as Miller. After the greeting, dictate ONE command — e.g. ' +
+      '<em>“Note kar lo kal subah saat baje uthana hai”</em> or <em>“Arunima ko good morning bhej dena”</em>. ' +
+      'Charco saves it to the Command inbox below and confirms before hanging up.',
+  };
+  function setModeButtons(disabled) {
+    modeAnswerBtn.disabled = disabled;
+    modeCommandBtn.disabled = disabled;
+  }
+  function setMode(next) {
+    if (callActive) return;
+    mode = next;
+    modeAnswerBtn.className = 'modebtn' + (mode === 'answer' ? ' active' : '');
+    modeCommandBtn.className = 'modebtn' + (mode === 'command' ? ' active' : '');
+    tryHint.innerHTML = HINTS[mode];
+    setStatus(
+      mode === 'command'
+        ? 'Command mode — tap “Start Call” and dictate a command as Miller'
+        : 'Ready — tap “Start Call”',
+      ''
+    );
+  }
+  modeAnswerBtn.addEventListener('click', function () { setMode('answer'); });
+  modeCommandBtn.addEventListener('click', function () { setMode('command'); });
+  renderCommandInbox();
+
   /* ---------------- Wiring ---------------- */
   startBtn.addEventListener('click', function () {
     transcriptEl.innerHTML = '';
     summaryEl.style.display = 'none';
     callerName = '';
-    step = 'name';
+    commandRetried = false;
+    var isCommand = mode === 'command';
+    step = isCommand ? 'command' : 'name';
+    if (isCommand) callerName = 'Miller'; // bubble label for the owner
     record = {
       id: 'demo-' + Date.now(),
-      type: 'incoming (browser demo)',
-      from: 'Browser test call',
+      type: isCommand ? 'command (browser demo)' : 'incoming (browser demo)',
+      mode: isCommand ? 'command' : 'answer',
+      from: isCommand ? 'Miller (browser demo)' : 'Browser test call',
       startedAt: new Date().toISOString(),
       endedAt: null,
       status: 'in-progress',
-      callerName: '',
+      callerName: isCommand ? 'Miller' : '',
       purpose: '',
       message: '',
       faqMatched: [],
@@ -390,11 +545,17 @@
     callActive = true;
     startTimer();
     startBtn.disabled = true; endBtn.disabled = false; micBtn.disabled = false;
+    setModeButtons(true);
     addBubble('system', 'Call connected — Charco is speaking…');
     setStatus('On call with Charco', 'live');
-    speak(LINES.greeting, function () {
-      if (callActive) assistantSayThenListen(LINES.askName);
-    });
+    if (isCommand) {
+      // Owner greeting, then listen for the one command.
+      speak(D.COMMAND.greeting, function () { if (callActive) startListening(); });
+    } else {
+      speak(LINES.greeting, function () {
+        if (callActive) assistantSayThenListen(LINES.askName);
+      });
+    }
   });
 
   micBtn.addEventListener('click', function () { if (callActive) startListening(); });
@@ -408,6 +569,7 @@
     addBubble('system', 'You ended the call.');
     setStatus('Call ended.', '');
     startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    setModeButtons(false);
     step = 'done';
   });
 
