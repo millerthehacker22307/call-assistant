@@ -1,4 +1,1 @@
-{
-  "outputDirectory": "public",
-  "framework": null
-}
+{"rewrites":[{"destination":"/api/index.js","source":"/voice/:path*"},{"destination":"/api/index.js","source":"/api/:path*"}]}

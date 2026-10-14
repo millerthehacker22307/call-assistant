@@ -30,6 +30,22 @@ npm start                 # http://localhost:3000
 Then open `http://localhost:3000/test-call.html` and tap **Start Call**.
 To let Twilio reach your local server during testing, expose it with a tunnel, e.g. `ngrok http 3000`, and use that HTTPS URL as the webhook base.
 
+## Deploy on Vercel
+
+The project is already shaped for Vercel — no code changes needed:
+
+1. **Import the repo** in Vercel (Add New → Project → pick this repository). The committed `vercel.json` takes care of routing: requests to `/voice/*` and `/api/*` are rewritten to the Express app running as a serverless function (`api/index.js` re-exports the app from `server.js`), and everything else is served as static files from `public/`. Framework preset can stay "Other".
+2. **Set environment variables** in the Vercel project (Settings → Environment Variables), then redeploy:
+   - `TWILIO_ACCOUNT_SID`
+   - `TWILIO_AUTH_TOKEN`
+   - `TWILIO_PHONE_NUMBER` (the Twilio number, in +1… / E.164 format)
+   - `PUBLIC_BASE_URL` — your deployment URL, e.g. `https://call-assistant-xxxx.vercel.app` (no trailing slash)
+3. **Point the Twilio number at it** (Twilio Console → Phone Numbers → your number → Voice configuration):
+   - "A call comes in" webhook → `POST https://<your-domain>/voice/incoming`
+   - Status callback → `POST https://<your-domain>/voice/status`
+
+> **Storage caveat on Vercel:** call summaries are kept in `data/calls.json`, but a serverless function's filesystem is ephemeral — writes may be lost when the instance recycles, and multi-step call state kept in that file is not guaranteed to survive between webhook requests. Fine for testing the deployment; for durable logs, move `lib/store.js` to a real database (e.g. Vercel KV/Postgres). Locally and on a normal Node host the JSON store works as documented.
+
 ## Going live on real phone calls — exact remaining steps
 
 1. **Create a Twilio account** at twilio.com (Miller's own account — the only missing piece).
@@ -52,7 +68,9 @@ To let Twilio reach your local server during testing, expose it with a tunnel, e
 ## Files
 
 ```
-server.js            Express app + all webhook/API endpoints
+server.js            Express app + all webhook/API endpoints (exports the app; listens only when run directly)
+api/index.js         Vercel serverless entry — re-exports the Express app from server.js
+vercel.json          Vercel routing: /voice/* and /api/* → api/index.js, everything else static from public/
 config.js            Assistant name, greetings, voices, FAQ answers (edit freely)
 lib/dialogue.js      Intent matching, name extraction, summary records
 lib/store.js         JSON-file storage for call summaries
