@@ -14,6 +14,16 @@ module.exports = {
   assistantShortName: 'Charco',
   ownerName: 'Miller',
 
+  /**
+   * Miller's own mobile number (E.164). COMMAND MODE trigger: when the
+   * incoming call's From matches this number (compared by last 10 digits,
+   * so +91… / 0… / bare forms all match), the assistant takes spoken
+   * commands from Miller instead of running the answering flow. Every
+   * other caller gets the normal answering flow, unchanged. See the
+   * `commandMode` block below and server.js (/voice/incoming).
+   */
+  ownerPhone: '+919506605427',
+
   // Twilio/Polly voices. Hindi text (Devanagari) automatically uses the
   // Hindi voice; everything else uses the Indian-English voice. See
   // `say()` in server.js — that is the en-IN fallback handling.
@@ -58,6 +68,28 @@ module.exports = {
     "Hello, this is Charco, calling on behalf of Miller. I have a quick enquiry, please.",
   outboundThanks:
     'Thank you for the information. I will pass this to Miller. Have a great day. Goodbye.',
+
+  /**
+   * COMMAND MODE lines (Miller, 2026-10-14). Spoken ONLY to Miller himself
+   * when he calls the assistant number (matched via `ownerPhone` above):
+   * he dictates a command, it is saved to data/commands.json, the
+   * confirmation is spoken back, and the call ends — inside the same
+   * 1-minute rule as every other call. The greeting is Hinglish BY DESIGN
+   * (it is for Miller personally, not a client-facing product surface);
+   * everything else in this file stays polished English.
+   */
+  commandMode: {
+    greeting: 'Welcome back, Miller. Boliye, kya command hai?',
+    // {text} is the command Miller dictated, trimmed to ~120 chars.
+    confirmTemplate: (text) =>
+      `Note kar liya: ${text}. Main ispar kaam karke WhatsApp par report dunga.`,
+    // Spoken once when the first attempt heard nothing; one retry follows.
+    emptyRetryLine:
+      'Sorry Miller, kuch sunai nahi diya. Ek baar phir boliye — kya command hai?',
+    // Spoken when the retry also heard nothing; the call then ends politely.
+    noCommandLine:
+      'Koi command nahi mila, toh call khatm kar raha hoon. Command WhatsApp par bhej dijiyega.',
+  },
 
   /**
    * FAQ intents. The dialogue manager (lib/dialogue.js) matches the caller's
