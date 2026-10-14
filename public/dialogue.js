@@ -140,5 +140,20 @@
       goodbye: 'Thank you for calling. Have a great day. Goodbye.',
       wrapUp: 'I will pass this on to Miller right away. Thank you for calling. Goodbye.',
     },
+    // COMMAND MODE lines — mirror config.commandMode on the server.
+    // Used when the demo runs "as Miller": he dictates one command, it
+    // lands in the on-page Command inbox, and the confirmation is spoken.
+    COMMAND: {
+      greeting: 'Welcome back, Miller. Boliye, kya command hai?',
+      confirm: function (text) {
+        var t = String(text || '').trim();
+        if (t.length > 120) t = t.slice(0, 120).trim() + '...';
+        return 'Note kar liya: ' + t + '. Main ispar kaam karke WhatsApp par report dunga.';
+      },
+      emptyRetryLine:
+        'Sorry Miller, kuch sunai nahi diya. Ek baar phir boliye — kya command hai?',
+      noCommandLine:
+        'Koi command nahi mila, toh call khatm kar raha hoon. Command WhatsApp par bhej dijiyega.',
+    },
   };
 })(window);
