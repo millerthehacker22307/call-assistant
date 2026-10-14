@@ -24,6 +24,15 @@ module.exports = {
   // Language hint given to Twilio's speech recogniser (<Gather>).
   gatherLanguage: 'hi-IN',
 
+  /**
+   * Call-duration rule (Miller, 2026-10-14): a call must NEVER exceed
+   * 1 minute, and should normally wrap up in 20–30 seconds. The flow is
+   * kept lean (greeting → name → purpose → one answer/message → end) and
+   * the elapsed time is enforced in server.js: at `wrapUpAtSeconds` the
+   * assistant says `wrapUp` and hangs up; `maxSeconds` is the hard cap.
+   */
+  callTiming: { targetSeconds: 30, maxSeconds: 60, wrapUpAtSeconds: 45 },
+
   businessHours: '9 AM to 9 PM, Monday to Saturday',
 
   greeting:
@@ -37,6 +46,9 @@ module.exports = {
   messageTaken: (name) =>
     `Thank you${name ? ', ' + name : ''}. I have noted your message and will pass it to Miller as soon as possible.`,
   goodbye: 'Thank you for calling. Have a great day. Goodbye.',
+  // Final line of every call — confirms the handover and closes politely.
+  // Also the ONLY line spoken when the 45-second wrap-up point is reached.
+  wrapUp: 'I will pass this on to Miller right away. Thank you for calling. Goodbye.',
   noInput:
     "I'm sorry, I could not hear you. Please call again, or leave your message when you call back. Goodbye.",
   fallback:
