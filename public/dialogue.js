@@ -114,6 +114,11 @@
     matchFaq: matchFaq,
     isDone: isDone,
     extractName: extractName,
+    // Miller's call-duration rule (mirrors config.callTiming on the server):
+    // a call never exceeds 1 minute; it normally wraps up in 20-30 seconds.
+    // The demo shows a live timer, starts the wrap-up at 45s and ends the
+    // call at 60s at the latest.
+    TIMING: { targetSeconds: 30, maxSeconds: 60, wrapUpAtSeconds: 45 },
     LINES: {
       greeting:
         "Hello, and thank you for calling. This is Charco, Miller's assistant. " +
@@ -133,6 +138,7 @@
         );
       },
       goodbye: 'Thank you for calling. Have a great day. Goodbye.',
+      wrapUp: 'I will pass this on to Miller right away. Thank you for calling. Goodbye.',
     },
   };
 })(window);
