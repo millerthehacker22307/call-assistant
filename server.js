@@ -74,6 +74,33 @@ function sendTwiml(res, twiml) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Call-duration rule (Miller, 2026-10-14)                             */
+/* A call must NEVER exceed 1 minute and should normally end in        */
+/* 20-30 seconds. Enforced two ways: (1) the dialogue below is lean —  */
+/* greeting -> name -> purpose -> ONE answer/message -> at most one    */
+/* "anything else?" -> end; (2) elapsed time is checked on every       */
+/* webhook step against the record created at /voice/incoming.         */
+/* ------------------------------------------------------------------ */
+const TIMING = config.callTiming || { targetSeconds: 30, maxSeconds: 60, wrapUpAtSeconds: 45 };
+
+/** Seconds since this call started (record created at /voice/incoming). */
+function elapsedSeconds(callSid) {
+  if (!callSid) return 0;
+  const rec = store.getCall(callSid);
+  if (!rec) return 0;
+  const start = typeof rec.createdAt === 'number' ? rec.createdAt : Date.parse(rec.startedAt || '');
+  if (!start || Number.isNaN(start)) return 0;
+  return Math.max(0, (Date.now() - start) / 1000);
+}
+
+/** Speak one final line and hang up — used for every timed/early ending. */
+function endWithLine(res, twiml, callSid, line) {
+  logSpeech(callSid, 'assistant', say(twiml, line));
+  twiml.hangup();
+  return sendTwiml(res, twiml);
+}
+
+/* ------------------------------------------------------------------ */
 /* Incoming calls                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -96,6 +123,7 @@ app.post('/voice/incoming', (req, res) => {
   const gather = twiml.gather({
     input: 'speech',
     language: config.gatherLanguage,
+    timeout: 4, // seconds of silence before giving up — silent callers must not stretch the call
     speechTimeout: 'auto',
     action: '/voice/gather?stage=name',
     method: 'POST',
@@ -111,6 +139,12 @@ app.post('/voice/incoming', (req, res) => {
  * POST /voice/gather?stage=name|purpose|more — the incoming-call dialogue.
  * State (stage, caller name) rides in the Gather action URL because
  * Twilio webhooks are stateless per request.
+ *
+ * LEAN FLOW (Miller's 1-minute rule — see TIMING above):
+ *   greeting -> name -> purpose -> handle ONE thing (FAQ answer or the
+ *   caller's message) -> at most ONE "anything else?" turn -> wrap-up.
+ * The 'more' stage never gathers again, so the conversation cannot loop:
+ * at most 3 caller turns, which lands a normal call at ~20-30 seconds.
  */
 app.post('/voice/gather', (req, res) => {
   const callSid = req.body.CallSid;
@@ -121,6 +155,25 @@ app.post('/voice/gather', (req, res) => {
 
   if (speech) logSpeech(callSid, 'caller', speech);
 
+  /* ---- Hard time enforcement, checked on EVERY step ----
+   * Once the wrap-up point (45s) is reached, no further input is gathered:
+   * save whatever the caller just said, speak the wrap-up line, hang up.
+   * Because wrapUpAtSeconds < maxSeconds, this also guarantees the 60s
+   * hard cap — a gather arriving after 60s gets the same instant ending. */
+  if (elapsedSeconds(callSid) >= TIMING.wrapUpAtSeconds) {
+    if (speech) {
+      if (stage === 'name') {
+        const callerName = dialogue.extractName(speech);
+        if (callerName) store.updateCall(callSid, { callerName });
+      } else {
+        const rec = store.getCall(callSid) || {};
+        const message = rec.message ? rec.message + ' | ' + speech : speech;
+        store.updateCall(callSid, { message, purpose: rec.purpose || 'Left a message' });
+      }
+    }
+    return endWithLine(res, twiml, callSid, config.wrapUp);
+  }
+
   /* ---- Stage 1: capture the caller's name ---- */
   if (stage === 'name') {
     const callerName = dialogue.extractName(speech) || name;
@@ -128,6 +181,7 @@ app.post('/voice/gather', (req, res) => {
     const gather = twiml.gather({
       input: 'speech',
       language: config.gatherLanguage,
+      timeout: 4,
       speechTimeout: 'auto',
       action: '/voice/gather?stage=purpose&name=' + encodeURIComponent(callerName || ''),
       method: 'POST',
@@ -138,15 +192,28 @@ app.post('/voice/gather', (req, res) => {
     return sendTwiml(res, twiml);
   }
 
-  /* ---- Stage 2/3: a question (FAQ) or a message ---- */
-  // stage === 'purpose' (first request) or 'more' (follow-up turns)
-  if (stage === 'more' && dialogue.isDone(speech)) {
-    logSpeech(callSid, 'assistant', say(twiml, config.messageTaken(name)));
-    logSpeech(callSid, 'assistant', say(twiml, config.goodbye));
-    twiml.hangup();
-    return sendTwiml(res, twiml);
+  /* ---- Final turn ('more'): exactly ONE follow-up, then the call ends ----
+   * Whatever the caller says here — "nothing else", one more FAQ, or a
+   * message — it is handled and the call wraps up immediately after. */
+  if (stage === 'more') {
+    if (!dialogue.isDone(speech)) {
+      const faq = dialogue.matchFaq(speech);
+      if (faq) {
+        const rec = store.getCall(callSid) || {};
+        const matched = Array.isArray(rec.faqMatched) ? rec.faqMatched : [];
+        matched.push(faq.id);
+        store.updateCall(callSid, { faqMatched: matched, purpose: rec.purpose || 'FAQ: ' + faq.id });
+        logSpeech(callSid, 'assistant', say(twiml, faq.answer));
+      } else if (speech) {
+        const rec = store.getCall(callSid) || {};
+        const message = rec.message ? rec.message + ' | ' + speech : speech;
+        store.updateCall(callSid, { message, purpose: rec.purpose || 'Left a message' });
+      }
+    }
+    return endWithLine(res, twiml, callSid, config.wrapUp);
   }
 
+  /* ---- Stage 2 ('purpose'): handle ONE thing — an FAQ or the message ---- */
   const faq = dialogue.matchFaq(speech);
   if (faq) {
     const rec = store.getCall(callSid) || {};
@@ -157,30 +224,27 @@ app.post('/voice/gather', (req, res) => {
       purpose: rec.purpose || 'FAQ: ' + faq.id,
     });
     logSpeech(callSid, 'assistant', say(twiml, faq.answer));
+    // Offer exactly one "anything else?" turn (the 'more' stage above).
     const gather = twiml.gather({
       input: 'speech',
       language: config.gatherLanguage,
+      timeout: 4,
       speechTimeout: 'auto',
       action: '/voice/gather?stage=more&name=' + encodeURIComponent(name || ''),
       method: 'POST',
     });
     logSpeech(callSid, 'assistant', say(gather, config.askAnythingElse));
-    logSpeech(callSid, 'assistant', say(twiml, config.messageTaken(name)));
-    logSpeech(callSid, 'assistant', say(twiml, config.goodbye));
-    twiml.hangup();
-    return sendTwiml(res, twiml);
+    // If the caller stays silent, the Gather falls through to: wrap-up + hangup.
+    return endWithLine(res, twiml, callSid, config.wrapUp);
   }
 
-  // Not an FAQ -> treat the speech as the caller's message for Miller.
+  // Not an FAQ -> the speech IS the caller's message for Miller. Call ends.
   if (speech) {
     const rec = store.getCall(callSid) || {};
     const message = rec.message ? rec.message + ' | ' + speech : speech;
     store.updateCall(callSid, { message, purpose: rec.purpose || 'Left a message' });
   }
-  logSpeech(callSid, 'assistant', say(twiml, config.messageTaken(name)));
-  logSpeech(callSid, 'assistant', say(twiml, config.goodbye));
-  twiml.hangup();
-  return sendTwiml(res, twiml);
+  return endWithLine(res, twiml, callSid, config.wrapUp);
 });
 
 /* ------------------------------------------------------------------ */
@@ -213,6 +277,7 @@ app.post('/voice/outbound', (req, res) => {
   const gather = twiml.gather({
     input: 'speech',
     language: config.gatherLanguage,
+    timeout: 4,
     speechTimeout: 'auto',
     action: '/voice/outbound-reply',
     method: 'POST',
