@@ -19,6 +19,8 @@
   .dot.live { background:#16a34a; box-shadow: 0 0 0 4px rgba(22,163,74,.15); }
   .dot.listening { background:#dc2626; box-shadow: 0 0 0 4px rgba(220,38,38,.15); }
   #statusText { font-weight:600; font-size: 15px; }
+  #callTimer { font-weight:700; font-size:14px; color: var(--muted); font-variant-numeric: tabular-nums; background:#f1f5f9; border:1px solid var(--line); border-radius:999px; padding: 3px 10px; }
+  #callTimer.warn { color:#b45309; background:#fffbeb; border-color:#fde68a; }
   select { padding: 7px 9px; border-radius: 8px; border:1px solid var(--line); font-size: 14px; margin-left:auto; }
   #transcript { min-height: 240px; max-height: 46vh; overflow-y:auto; padding: 6px 2px; display:flex; flex-direction:column; gap:8px; }
   .bubble { max-width: 86%; padding: 10px 12px; border-radius: 14px; font-size: 15px; line-height: 1.5; }
@@ -54,6 +56,8 @@
       Use Chrome or Edge on your phone or laptop, and allow microphone access.
     </p>
     <div class="note">
+      <strong>Short calls by design:</strong> Charco keeps every call under <strong>1 minute</strong> — normally it wraps up in
+      20–30 seconds. The timer above shows the live duration; at 45 seconds Charco politely wraps up, and the call ends at 60 seconds at the latest.<br />
       <strong>Demo mode:</strong> this call runs 100% in your browser using the Web Speech API — free, no account needed.
       Real phone calls (on Miller's actual number) activate after the Twilio telephony keys are added to the server's
       <code>.env</code> file. Mic works on <code>localhost</code> or HTTPS pages.
@@ -63,6 +67,7 @@
       <div class="statusbar">
         <span class="dot" id="statusDot"></span>
         <span id="statusText">Ready — tap “Start Call”</span>
+        <span id="callTimer" title="Call duration — calls are capped at 1 minute">⏱ 0:00</span>
         <select id="langSel" title="Speech language">
           <option value="en-IN" selected>English (India)</option>
           <option value="hi-IN">हिन्दी (Hindi)</option>
@@ -101,6 +106,7 @@
   var transcriptEl = document.getElementById('transcript');
   var statusText = document.getElementById('statusText');
   var statusDot = document.getElementById('statusDot');
+  var callTimerEl = document.getElementById('callTimer');
   var startBtn = document.getElementById('startBtn');
   var micBtn = document.getElementById('micBtn');
   var endBtn = document.getElementById('endBtn');
@@ -118,6 +124,11 @@
   var record = null;
   var recognition = null;
   var wantListen = false;
+  // Call-duration rule state (mirrors the server): timer + wrap-up flags.
+  var TIMING = D.TIMING;
+  var callStartTs = 0;
+  var timerInt = null;
+  var wrappingUp = false;
 
   /* ---------------- UI helpers ---------------- */
   function setStatus(text, mode) {
@@ -136,6 +147,61 @@
   }
   function logTurn(speaker, text) {
     if (record) record.transcript.push({ speaker: speaker, text: text });
+  }
+
+  /* ---------------- Call timer (Miller's 1-minute rule) ---------------- */
+  function elapsedSecs() {
+    return callStartTs ? Math.max(0, Math.floor((Date.now() - callStartTs) / 1000)) : 0;
+  }
+  function fmtTime(s) {
+    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+  }
+  function renderTimer() {
+    var s = elapsedSecs();
+    callTimerEl.textContent = '⏱ ' + fmtTime(s);
+    callTimerEl.className = s >= TIMING.wrapUpAtSeconds ? 'warn' : '';
+  }
+  function tickTimer() {
+    renderTimer();
+    if (!callActive) return;
+    var s = elapsedSecs();
+    if (s >= TIMING.maxSeconds) { forceEnd(); return; }
+    if (s >= TIMING.wrapUpAtSeconds && !wrappingUp) {
+      wrappingUp = true;
+      finishCall('time'); // assistant says the wrap-up line and the call ends
+    }
+  }
+  function startTimer() {
+    callStartTs = Date.now();
+    wrappingUp = false;
+    renderTimer();
+    stopTimer();
+    timerInt = setInterval(tickTimer, 250);
+  }
+  function stopTimer() {
+    if (timerInt) { clearInterval(timerInt); timerInt = null; }
+  }
+  // Last-resort stop at the 60s hard cap, whatever the dialogue is doing.
+  function forceEnd() {
+    if (step === 'done') { stopTimer(); return; }
+    step = 'done';
+    callActive = false;
+    stopListening();
+    if (synth) try { synth.cancel(); } catch (e) {}
+    addBubble('assistant', LINES.wrapUp);
+    logTurn('assistant', LINES.wrapUp);
+    addBubble('system', 'Call ended — 1-minute limit');
+    setStatus('Call ended — summary saved below ✅', '');
+    startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    if (record) {
+      record.endedAt = new Date().toISOString();
+      record.durationSec = elapsedSecs();
+      record.status = 'completed';
+      record.endedReason = 'time-limit';
+      saveSummary(record);
+      renderSummary(record);
+    }
+    stopTimer();
   }
 
   /* ---------------- Speech out (TTS) ---------------- */
@@ -233,10 +299,16 @@
     if (faq) {
       record.faqMatched.push(faq.id);
       if (!record.purpose) record.purpose = 'FAQ: ' + faq.id;
-      step = 'more';
-      speak(faq.answer, function () {
-        if (callActive) assistantSayThenListen(LINES.askAnythingElse);
-      });
+      if (step === 'more') {
+        // The ONE allowed follow-up has been used — answer it, then wrap up.
+        // (Lean flow: the call never loops, so it stays at ~20-30 seconds.)
+        speak(faq.answer, function () { finishCall(); });
+      } else {
+        step = 'more';
+        speak(faq.answer, function () {
+          if (callActive) assistantSayThenListen(LINES.askAnythingElse);
+        });
+      }
       return;
     }
 
@@ -246,21 +318,27 @@
     finishCall();
   }
 
-  function finishCall() {
+  // Every ending — natural or time-triggered — speaks the single wrap-up
+  // line and closes. reason: 'natural' | 'time'.
+  function finishCall(reason) {
+    if (step === 'done') return;
     step = 'done';
     callActive = false;
     stopListening();
-    speak(LINES.messageTaken(callerName), function () {
-      speak(LINES.goodbye, null);
-      setStatus('Call ended — summary saved below ✅', '');
-      startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    stopTimer();
+    if (record) {
       record.endedAt = new Date().toISOString();
+      record.durationSec = elapsedSecs();
       record.status = 'completed';
-      saveSummary(record);
-      renderSummary(record);
+      record.endedReason = reason || 'natural';
+    }
+    if (reason === 'time') addBubble('system', 'Call ended — 1-minute limit');
+    speak(LINES.wrapUp, function () {
+      setStatus('Call ended — summary saved below ✅', '');
     });
     setStatus('Wrapping up…', 'live');
     startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    if (record) { saveSummary(record); renderSummary(record); }
   }
 
   /* ---------------- Summary ---------------- */
@@ -281,6 +359,7 @@
       '<dl>' +
       '<dt>Caller</dt><dd>' + esc(rec.callerName || 'Not given') + '</dd>' +
       '<dt>Time</dt><dd>' + esc(new Date(rec.startedAt).toLocaleString()) + '</dd>' +
+      (rec.durationSec != null ? '<dt>Duration</dt><dd>' + esc(rec.durationSec + ' sec') + '</dd>' : '') +
       '<dt>Purpose</dt><dd>' + esc(rec.purpose || '—') + '</dd>' +
       '<dt>Message</dt><dd>' + esc(rec.message || '—') + '</dd>' +
       (rec.faqMatched.length ? '<dt>FAQs used</dt><dd>' + esc(rec.faqMatched.join(', ')) + '</dd>' : '') +
@@ -309,6 +388,7 @@
       transcript: [],
     };
     callActive = true;
+    startTimer();
     startBtn.disabled = true; endBtn.disabled = false; micBtn.disabled = false;
     addBubble('system', 'Call connected — Charco is speaking…');
     setStatus('On call with Charco', 'live');
@@ -322,6 +402,7 @@
   endBtn.addEventListener('click', function () {
     if (!callActive) return;
     callActive = false;
+    stopTimer();
     stopListening();
     if (synth) try { synth.cancel(); } catch (e) {}
     addBubble('system', 'You ended the call.');
