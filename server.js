@@ -104,21 +104,65 @@ function endWithLine(res, twiml, callSid, line) {
 /* Incoming calls                                                      */
 /* ------------------------------------------------------------------ */
 
+/** Trim a dictated command for the spoken confirmation (~120 chars). */
+function trimCommand(text) {
+  const t = String(text || '').trim();
+  return t.length > 120 ? t.slice(0, 120).trim() + '...' : t;
+}
+
 /**
  * POST /voice/incoming — Twilio webhook for the Twilio number's
- * "A call comes in" setting. Greets the caller and gathers their name.
+ * "A call comes in" setting.
+ *
+ * Two flows share this entry point:
+ * - COMMAND MODE: if the caller is Miller himself (From matches
+ *   config.ownerPhone by last 10 digits), the assistant greets him,
+ *   gathers ONE spoken command, and /voice/command saves + confirms it.
+ * - Everyone else: the normal answering flow (greeting + name below).
  */
 app.post('/voice/incoming', (req, res) => {
   const callSid = req.body.CallSid;
+  const isOwner = dialogue.isOwnerNumber(req.body.From);
   const rec = dialogue.newCallRecord({
     callSid,
     type: 'incoming',
     from: req.body.From,
     to: req.body.To,
   });
+  if (isOwner) {
+    rec.mode = 'command';
+    rec.purpose = 'Owner command';
+    rec.callerName = config.ownerName;
+  }
   store.saveCall(rec);
 
   const twiml = new VoiceResponse();
+
+  if (isOwner) {
+    /* ---- COMMAND MODE greeting + first command gather ----
+     * Lean by design (one command, one confirmation): greeting -> speak
+     * command -> confirmation -> hangup lands at ~20-30s, and the same
+     * elapsed-time guard runs in /voice/command. If the first gather
+     * hears nothing, TwiML falls through to ONE retry gather (the
+     * emptyRetryLine), then a polite ending — no third attempt. */
+    logSpeech(callSid, 'assistant', say(twiml, config.commandMode.greeting));
+    const gatherOpts = {
+      input: 'speech',
+      language: config.gatherLanguage,
+      timeout: 4,
+      speechTimeout: 'auto',
+      action: '/voice/command',
+      method: 'POST',
+    };
+    twiml.gather(gatherOpts);
+    const retry = twiml.gather(gatherOpts);
+    logSpeech(callSid, 'assistant', say(retry, config.commandMode.emptyRetryLine));
+    say(twiml, config.commandMode.noCommandLine);
+    twiml.hangup();
+    return sendTwiml(res, twiml);
+  }
+
+  /* ---- Answering flow (every other caller) — unchanged ---- */
   logSpeech(callSid, 'assistant', say(twiml, config.greeting));
   const gather = twiml.gather({
     input: 'speech',
@@ -245,6 +289,61 @@ app.post('/voice/gather', (req, res) => {
     store.updateCall(callSid, { message, purpose: rec.purpose || 'Left a message' });
   }
   return endWithLine(res, twiml, callSid, config.wrapUp);
+});
+
+/* ------------------------------------------------------------------ */
+/* COMMAND MODE — Miller dictates orders from his own number           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * POST /voice/command — receives the speech gathered after the command
+ * greeting in /voice/incoming. Saves the command to data/commands.json
+ * (status 'new' — Charco picks it up via GET /api/commands), speaks the
+ * confirmation back, and hangs up. A command call is one gather + one
+ * confirmation, so it lands well inside the 1-minute rule; the elapsed
+ * guard below covers the pathological cases.
+ */
+app.post('/voice/command', (req, res) => {
+  const callSid = req.body.CallSid;
+  const speech = (req.body.SpeechResult || '').trim();
+  const twiml = new VoiceResponse();
+
+  if (speech) {
+    logSpeech(callSid, 'caller', speech);
+    const rec = store.getCall(callSid) || {};
+    const cmd = dialogue.newCommandRecord({
+      from: req.body.From || rec.from,
+      commandText: speech,
+    });
+    store.saveCommand(cmd);
+    store.updateCall(callSid, {
+      mode: 'command',
+      purpose: 'Owner command',
+      message: speech,
+      commandId: cmd.id,
+    });
+    // Confirmation is the final line of the call — one sentence, then out.
+    return endWithLine(res, twiml, callSid, config.commandMode.confirmTemplate(trimCommand(speech)));
+  }
+
+  /* Nothing was captured on this POST. The greeting TwiML already
+   * contains one fall-through retry, so this path is only a backstop:
+   * retry once if there is still time, otherwise end politely. */
+  if (elapsedSeconds(callSid) < TIMING.wrapUpAtSeconds) {
+    const gather = twiml.gather({
+      input: 'speech',
+      language: config.gatherLanguage,
+      timeout: 4,
+      speechTimeout: 'auto',
+      action: '/voice/command',
+      method: 'POST',
+    });
+    logSpeech(callSid, 'assistant', say(gather, config.commandMode.emptyRetryLine));
+    say(twiml, config.commandMode.noCommandLine);
+    twiml.hangup();
+    return sendTwiml(res, twiml);
+  }
+  return endWithLine(res, twiml, callSid, config.commandMode.noCommandLine);
 });
 
 /* ------------------------------------------------------------------ */
@@ -375,6 +474,30 @@ app.get('/api/calls', (req, res) => {
   res.json({ count: calls.length, calls });
 });
 
+/**
+ * GET /api/commands — Miller's saved voice commands, newest first.
+ * Optional filter: ?status=new (only unexecuted) or ?status=done.
+ * This is how Charco picks up new commands to execute.
+ */
+app.get('/api/commands', (req, res) => {
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const commands = store.listCommands(status ? { status } : undefined);
+  res.json({ count: commands.length, commands });
+});
+
+/** POST /api/commands/:id/done — mark a command executed. */
+app.post('/api/commands/:id/done', (req, res) => {
+  const existing = store.getCommand(req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'not_found', message: 'No command with that id.' });
+  }
+  const command = store.updateCommand(existing.id, {
+    status: 'done',
+    doneAt: new Date().toISOString(),
+  });
+  res.json({ ok: true, command });
+});
+
 /** GET /api/health — quick sanity/config check (never leaks secrets). */
 app.get('/api/health', (req, res) => {
   res.json({
@@ -382,6 +505,7 @@ app.get('/api/health', (req, res) => {
     assistant: config.assistantName,
     owner: config.ownerName,
     telephonyConfigured: TWILIO_CONFIGURED,
+    commands: { total: store.countCommands(), new: store.countCommands('new') },
   });
 });
 
@@ -394,6 +518,7 @@ if (require.main === module) {
     console.log(`  Landing page : http://localhost:${PORT}/`);
     console.log(`  Test Call    : http://localhost:${PORT}/test-call.html`);
     console.log(`  Call log API : http://localhost:${PORT}/api/calls`);
+    console.log(`  Commands API : http://localhost:${PORT}/api/commands`);
     console.log(
       TWILIO_CONFIGURED
         ? '  Telephony    : Twilio keys found — live calls enabled.'
