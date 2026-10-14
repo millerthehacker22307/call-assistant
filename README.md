@@ -12,6 +12,7 @@ An AI voice assistant that **answers Miller's phone calls** (greets the caller i
 
 ## What works right now (no keys)
 
+- ⏱ **Under-a-minute calls (Miller's rule):** every call is capped at **60 seconds** and normally wraps up in **20–30 seconds** — the flow is lean (greeting → name → purpose → one answer/message → at most one "anything else?" → wrap-up), elapsed time is enforced server-side at the 45-second wrap-up point, and the browser demo shows a live timer with the same cap.
 - Landing page: `GET /`
 - **Browser Test Call**: `GET /test-call.html` — talk to Charco with your mic (Chrome/Edge), or type replies. Summary is shown on screen and kept in the browser.
 - Call log API: `GET /api/calls` · Health: `GET /api/health`
@@ -71,7 +72,7 @@ The project is already shaped for Vercel — no code changes needed:
 server.js            Express app + all webhook/API endpoints (exports the app; listens only when run directly)
 api/index.js         Vercel serverless entry — re-exports the Express app from server.js
 vercel.json          Vercel routing: /voice/* and /api/* → api/index.js, everything else static from public/
-config.js            Assistant name, greetings, voices, FAQ answers (edit freely)
+config.js            Assistant name, greetings, voices, FAQ answers, and call timing (callTiming: target 30s / wrap up at 45s / hard cap 60s) — edit freely
 lib/dialogue.js      Intent matching, name extraction, summary records
 lib/store.js         JSON-file storage for call summaries
 public/index.html    Landing page
