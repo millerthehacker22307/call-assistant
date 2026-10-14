@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Charco Call Assistant — Miller's AI Phone Assistant</title>
+<style>
+  :root { --ink:#1b2430; --muted:#5b6b7f; --brand:#0f766e; --brand2:#115e59; --bg:#f6f8fa; --card:#ffffff; --line:#e2e8f0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 16px 56px; }
+  header { text-align:center; padding: 36px 12px 8px; }
+  .badge { display:inline-block; background:#ccfbf1; color:var(--brand2); font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; padding:6px 12px; border-radius:999px; }
+  h1 { font-size: clamp(28px, 5vw, 42px); margin: 14px 0 8px; }
+  h1 .accent { color: var(--brand); }
+  p.lead { color: var(--muted); font-size: 17px; max-width: 620px; margin: 0 auto; line-height: 1.55; }
+  .cta { margin: 26px 0 6px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .btn { display:inline-block; text-decoration:none; font-weight:700; padding: 13px 22px; border-radius: 12px; font-size: 16px; }
+  .btn-primary { background: var(--brand); color:#fff; }
+  .btn-primary:hover { background: var(--brand2); }
+  .btn-ghost { background:#fff; color: var(--brand2); border:1px solid var(--line); }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 30px; }
+  .card { background: var(--card); border:1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .card h3 { margin: 0 0 8px; font-size: 17px; }
+  .card p { margin:0; color: var(--muted); line-height:1.55; font-size: 15px; }
+  .card .icon { font-size: 24px; margin-bottom: 8px; display:block; }
+  .how { margin-top: 30px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding: 20px; }
+  .how h2 { margin-top:0; font-size: 20px; }
+  .how ol { color: var(--muted); line-height: 1.7; padding-left: 20px; }
+  footer { text-align:center; color: var(--muted); font-size: 13px; margin-top: 34px; line-height: 1.6; }
+  code { background:#eef2f7; padding: 1px 6px; border-radius: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <span class="badge">Charco Call Assistant</span>
+      <h1>Never miss a call.<br /><span class="accent">Charco answers for Miller.</span></h1>
+      <p class="lead">
+        An AI voice assistant that picks up Miller's calls, speaks politely in English
+        (with Hindi/Hinglish understanding), answers common questions, takes messages —
+        and can also place a call to ask something on Miller's behalf.
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" href="/test-call.html">📞 Try the Live Test Call</a>
+        <a class="btn btn-ghost" href="/api/calls">View Saved Call Summaries</a>
+      </div>
+      <p style="color:var(--muted); font-size:14px;">The test call runs fully in your browser — no account, no phone number needed.</p>
+    </header>
+
+    <section class="grid">
+      <div class="card">
+        <span class="icon">📲</span>
+        <h3>Answers incoming calls</h3>
+        <p>Greets the caller, asks their name and purpose, answers FAQs about timings, location and more — politely, every single time.</p>
+      </div>
+      <div class="card">
+        <span class="icon">📝</span>
+        <h3>Takes messages that reach Miller</h3>
+        <p>Every call ends as a clean summary: who called, when, why, and their exact message — saved for Miller to review.</p>
+      </div>
+      <div class="card">
+        <span class="icon">📤</span>
+        <h3>Makes enquiry calls</h3>
+        <p>Give it a number and a script — the assistant calls, asks the questions, listens to the reply, and saves it for Miller.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🗣️</span>
+        <h3>Understands English &amp; Hinglish</h3>
+        <p>Speech recognition tuned for Indian callers (hi-IN / en-IN). Callers can speak naturally — Charco keeps up.</p>
+      </div>
+    </section>
+
+    <section class="how">
+      <h2>How it works</h2>
+      <ol>
+        <li>Calls run through <strong>Twilio</strong> webhooks (<code>/voice/incoming</code>, <code>/voice/gather</code>, <code>/voice/outbound</code>).</li>
+        <li>A built-in dialogue manager matches questions to FAQs and captures names and messages — no paid AI key required.</li>
+        <li>Summaries are stored in <code>data/calls.json</code> and readable at <code>/api/calls</code>.</li>
+        <li>Real phone calls activate the moment Miller adds his own Twilio keys to <code>.env</code> — see the README for the exact steps.</li>
+      </ol>
+    </section>
+
+    <footer>
+      Charco Call Assistant · Built for Miller · Demo works today; phone lines activate after telephony setup.
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Test Call — Charco Call Assistant</title>
+<style>
+  :root { --ink:#1b2430; --muted:#5b6b7f; --brand:#0f766e; --brand2:#115e59; --bg:#f6f8fa; --card:#fff; --line:#e2e8f0; --caller:#e0f2fe; --assistant:#f0fdfa; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 20px 14px 48px; }
+  a.back { color: var(--brand2); text-decoration:none; font-weight:600; font-size:14px; }
+  h1 { font-size: 26px; margin: 12px 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; line-height: 1.55; }
+  .note { background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:12px; padding:12px 14px; font-size:14px; line-height:1.55; margin-bottom:16px; }
+  .panel { background: var(--card); border:1px solid var(--line); border-radius: 16px; padding: 16px; }
+  .statusbar { display:flex; align-items:center; gap:10px; margin-bottom: 12px; flex-wrap:wrap; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#cbd5e1; }
+  .dot.live { background:#16a34a; box-shadow: 0 0 0 4px rgba(22,163,74,.15); }
+  .dot.listening { background:#dc2626; box-shadow: 0 0 0 4px rgba(220,38,38,.15); }
+  #statusText { font-weight:600; font-size: 15px; }
+  select { padding: 7px 9px; border-radius: 8px; border:1px solid var(--line); font-size: 14px; margin-left:auto; }
+  #transcript { min-height: 240px; max-height: 46vh; overflow-y:auto; padding: 6px 2px; display:flex; flex-direction:column; gap:8px; }
+  .bubble { max-width: 86%; padding: 10px 12px; border-radius: 14px; font-size: 15px; line-height: 1.5; }
+  .bubble .who { display:block; font-size: 11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-bottom: 3px; opacity:.65; }
+  .bubble.assistant { background: var(--assistant); border:1px solid #99f6e4; align-self:flex-start; border-bottom-left-radius:4px; }
+  .bubble.caller { background: var(--caller); border:1px solid #bae6fd; align-self:flex-end; border-bottom-right-radius:4px; }
+  .bubble.system { background:#f8fafc; border:1px dashed var(--line); align-self:center; color:var(--muted); font-size:13px; }
+  .controls { display:flex; gap:10px; margin-top: 14px; flex-wrap: wrap; }
+  button { cursor:pointer; border:none; border-radius: 12px; font-weight:700; font-size: 15px; padding: 12px 18px; }
+  #startBtn { background: var(--brand); color:#fff; }
+  #startBtn:hover { background: var(--brand2); }
+  #micBtn { background:#fff; border:1px solid var(--line); color: var(--ink); }
+  #endBtn { background:#fee2e2; color:#b91c1c; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  form.typebox { display:flex; gap:8px; margin-top: 12px; }
+  form.typebox input { flex:1; padding: 11px 12px; border:1px solid var(--line); border-radius: 10px; font-size: 15px; }
+  form.typebox button { background:#0ea5e9; color:#fff; }
+  #summary { display:none; margin-top:16px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius: 14px; padding: 16px; }
+  #summary h3 { margin: 0 0 10px; }
+  #summary dl { margin:0; display:grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 14.5px; }
+  #summary dt { font-weight:700; color:#166534; }
+  #summary dd { margin:0; }
+  .small { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="/">← Back to home</a>
+    <h1>📞 Test Call — talk to Charco</h1>
+    <p class="sub">
+      This is exactly how a phone call with the assistant flows: Charco greets you, asks your name,
+      understands your question or takes your message — and saves a summary for Miller.
+      Use Chrome or Edge on your phone or laptop, and allow microphone access.
+    </p>
+    <div class="note">
+      <strong>Demo mode:</strong> this call runs 100% in your browser using the Web Speech API — free, no account needed.
+      Real phone calls (on Miller's actual number) activate after the Twilio telephony keys are added to the server's
+      <code>.env</code> file. Mic works on <code>localhost</code> or HTTPS pages.
+    </div>
+
+    <div class="panel">
+      <div class="statusbar">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">Ready — tap “Start Call”</span>
+        <select id="langSel" title="Speech language">
+          <option value="en-IN" selected>English (India)</option>
+          <option value="hi-IN">हिन्दी (Hindi)</option>
+        </select>
+      </div>
+
+      <div id="transcript"></div>
+
+      <div class="controls">
+        <button id="startBtn">▶ Start Call</button>
+        <button id="micBtn" disabled>🎙️ Speak now</button>
+        <button id="endBtn" disabled>⏹ End Call</button>
+      </div>
+
+      <form class="typebox" id="typeForm">
+        <input id="typeInput" type="text" placeholder="No mic? Type your reply here and press Send…" autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+      <p class="small">
+        Try saying: <em>“My name is Aarav”</em> → then ask <em>“What are your timings?”</em>,
+        <em>“Who is this?”</em>, <em>“What is the price?”</em> — or just dictate a message for Miller.
+        Say <em>“Nothing else”</em> or <em>“Bye”</em> to end politely.
+      </p>
+    </div>
+
+    <div id="summary"></div>
+  </div>
+
+<script src="/dialogue.js"></script>
+<script>
+(function () {
+  'use strict';
+  var D = window.CharcoDialogue;
+  var LINES = D.LINES;
+
+  var transcriptEl = document.getElementById('transcript');
+  var statusText = document.getElementById('statusText');
+  var statusDot = document.getElementById('statusDot');
+  var startBtn = document.getElementById('startBtn');
+  var micBtn = document.getElementById('micBtn');
+  var endBtn = document.getElementById('endBtn');
+  var langSel = document.getElementById('langSel');
+  var typeForm = document.getElementById('typeForm');
+  var typeInput = document.getElementById('typeInput');
+  var summaryEl = document.getElementById('summary');
+
+  var Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var synth = window.speechSynthesis;
+
+  var callActive = false;
+  var step = 'idle'; // idle -> name -> purpose -> more -> done
+  var callerName = '';
+  var record = null;
+  var recognition = null;
+  var wantListen = false;
+
+  /* ---------------- UI helpers ---------------- */
+  function setStatus(text, mode) {
+    statusText.textContent = text;
+    statusDot.className = 'dot' + (mode ? ' ' + mode : '');
+  }
+  function addBubble(who, text) {
+    var div = document.createElement('div');
+    div.className = 'bubble ' + who;
+    var label = who === 'assistant' ? 'Charco' : who === 'caller' ? (callerName || 'You') : 'Call';
+    div.innerHTML = '<span class="who"></span>';
+    div.querySelector('.who').textContent = label;
+    div.appendChild(document.createTextNode(text));
+    transcriptEl.appendChild(div);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+  function logTurn(speaker, text) {
+    if (record) record.transcript.push({ speaker: speaker, text: text });
+  }
+
+  /* ---------------- Speech out (TTS) ---------------- */
+  function pickVoice(lang) {
+    if (!synth) return null;
+    var voices = synth.getVoices();
+    var exact = voices.filter(function (v) { return v.lang === lang; });
+    if (exact.length) return exact[0];
+    var prefix = lang.split('-')[0];
+    var partial = voices.filter(function (v) { return v.lang && v.lang.indexOf(prefix) === 0; });
+    return partial[0] || null;
+  }
+  if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = function () {};
+
+  function speak(text, after) {
+    addBubble('assistant', text);
+    logTurn('assistant', text);
+    if (!synth) { if (after) setTimeout(after, 350); return; }
+    try { synth.cancel(); } catch (e) {}
+    var u = new SpeechSynthesisUtterance(text);
+    var hindi = /[\u0900-\u097F]/.test(text);
+    u.lang = hindi ? 'hi-IN' : langSel.value;
+    var v = pickVoice(u.lang);
+    if (v) u.voice = v;
+    u.rate = 1.0;
+    var done = false;
+    function finish() { if (!done) { done = true; if (after) after(); } }
+    u.onend = finish;
+    u.onerror = finish;
+    synth.speak(u);
+    setTimeout(finish, Math.max(2500, text.length * 110)); // safety if onend never fires
+  }
+
+  /* ---------------- Speech in (STT) ---------------- */
+  function startListening() {
+    if (!callActive) return;
+    if (!Recognition) {
+      setStatus('Voice input is not supported in this browser — please type your reply below.', 'live');
+      typeInput.focus();
+      return;
+    }
+    stopListening();
+    recognition = new Recognition();
+    recognition.lang = langSel.value;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = function () { setStatus('Listening… speak now 🎙️', 'listening'); };
+    recognition.onresult = function (ev) {
+      var text = ev.results[0][0].transcript.trim();
+      wantListen = false;
+      handleUserSpeech(text);
+    };
+    recognition.onerror = function (ev) {
+      if (!callActive) return;
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        setStatus('Microphone permission denied — please allow the mic, or type your reply below.', 'live');
+      } else if (ev.error === 'no-speech' && wantListen) {
+        setStatus('I did not catch that — tap “Speak now” and try again, or type below.', 'live');
+      }
+    };
+    recognition.onend = function () {
+      if (callActive && statusDot.className.indexOf('listening') !== -1) setStatus('Your turn — speak or type.', 'live');
+    };
+    wantListen = true;
+    try { recognition.start(); } catch (e) {}
+  }
+  function stopListening() {
+    if (recognition) { try { recognition.onresult = null; recognition.stop(); } catch (e) {} recognition = null; }
+  }
+
+  /* ---------------- Dialogue flow (mirrors the phone flow) ---------------- */
+  function assistantSayThenListen(text) {
+    speak(text, function () { if (callActive) startListening(); });
+  }
+
+  function handleUserSpeech(text) {
+    if (!callActive || !text) return;
+    addBubble('caller', text);
+    logTurn('caller', text);
+
+    if (step === 'name') {
+      callerName = D.extractName(text);
+      record.callerName = callerName;
+      step = 'purpose';
+      assistantSayThenListen(LINES.askPurpose(callerName));
+      return;
+    }
+
+    if (step === 'more' && D.isDone(text)) {
+      finishCall();
+      return;
+    }
+
+    var faq = D.matchFaq(text);
+    if (faq) {
+      record.faqMatched.push(faq.id);
+      if (!record.purpose) record.purpose = 'FAQ: ' + faq.id;
+      step = 'more';
+      speak(faq.answer, function () {
+        if (callActive) assistantSayThenListen(LINES.askAnythingElse);
+      });
+      return;
+    }
+
+    // Anything else = a message for Miller.
+    record.message = record.message ? record.message + ' | ' + text : text;
+    if (!record.purpose) record.purpose = 'Left a message';
+    finishCall();
+  }
+
+  function finishCall() {
+    step = 'done';
+    callActive = false;
+    stopListening();
+    speak(LINES.messageTaken(callerName), function () {
+      speak(LINES.goodbye, null);
+      setStatus('Call ended — summary saved below ✅', '');
+      startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+      record.endedAt = new Date().toISOString();
+      record.status = 'completed';
+      saveSummary(record);
+      renderSummary(record);
+    });
+    setStatus('Wrapping up…', 'live');
+    startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+  }
+
+  /* ---------------- Summary ---------------- */
+  function saveSummary(rec) {
+    try {
+      var all = JSON.parse(localStorage.getItem('charco_demo_calls') || '[]');
+      all.push(rec);
+      localStorage.setItem('charco_demo_calls', JSON.stringify(all));
+    } catch (e) {}
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function renderSummary(rec) {
+    summaryEl.style.display = 'block';
+    summaryEl.innerHTML =
+      '<h3>📋 Call summary (this is what Miller sees)</h3>' +
+      '<dl>' +
+      '<dt>Caller</dt><dd>' + esc(rec.callerName || 'Not given') + '</dd>' +
+      '<dt>Time</dt><dd>' + esc(new Date(rec.startedAt).toLocaleString()) + '</dd>' +
+      '<dt>Purpose</dt><dd>' + esc(rec.purpose || '—') + '</dd>' +
+      '<dt>Message</dt><dd>' + esc(rec.message || '—') + '</dd>' +
+      (rec.faqMatched.length ? '<dt>FAQs used</dt><dd>' + esc(rec.faqMatched.join(', ')) + '</dd>' : '') +
+      '</dl>' +
+      '<p class="small">Demo summaries stay in this browser (localStorage). On real phone calls, the same summary is saved on the server and visible at <a href="/api/calls">/api/calls</a>.</p>';
+    summaryEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  /* ---------------- Wiring ---------------- */
+  startBtn.addEventListener('click', function () {
+    transcriptEl.innerHTML = '';
+    summaryEl.style.display = 'none';
+    callerName = '';
+    step = 'name';
+    record = {
+      id: 'demo-' + Date.now(),
+      type: 'incoming (browser demo)',
+      from: 'Browser test call',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      status: 'in-progress',
+      callerName: '',
+      purpose: '',
+      message: '',
+      faqMatched: [],
+      transcript: [],
+    };
+    callActive = true;
+    startBtn.disabled = true; endBtn.disabled = false; micBtn.disabled = false;
+    addBubble('system', 'Call connected — Charco is speaking…');
+    setStatus('On call with Charco', 'live');
+    speak(LINES.greeting, function () {
+      if (callActive) assistantSayThenListen(LINES.askName);
+    });
+  });
+
+  micBtn.addEventListener('click', function () { if (callActive) startListening(); });
+
+  endBtn.addEventListener('click', function () {
+    if (!callActive) return;
+    callActive = false;
+    stopListening();
+    if (synth) try { synth.cancel(); } catch (e) {}
+    addBubble('system', 'You ended the call.');
+    setStatus('Call ended.', '');
+    startBtn.disabled = false; micBtn.disabled = true; endBtn.disabled = true;
+    step = 'done';
+  });
+
+  typeForm.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = typeInput.value.trim();
+    if (!text || !callActive) return;
+    typeInput.value = '';
+    stopListening();
+    handleUserSpeech(text);
+  });
+
+  if (!Recognition) {
+    addBubble('system', 'This browser does not support voice input (Web Speech API). You can still do the full test call by typing your replies below.');
+  } else {
+    addBubble('system', 'Tip: try a full conversation — introduce yourself, ask about timings or price, then say “nothing else”.');
+  }
+})();
+</script>
+</body>
+</html>
